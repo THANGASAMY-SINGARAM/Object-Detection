@@ -2,6 +2,16 @@
 
 Real-time object detection and class-aware multi-object tracking using [Ultralytics YOLO](https://docs.ultralytics.com/) and a self-contained implementation of [SORT](https://arxiv.org/abs/1602.00763). It works with a webcam or video file, assigns persistent IDs to detected objects, and can render an annotated output video.
 
+## Web app
+
+The easiest way to use VisionTrack is the Streamlit web interface. It provides a modern UI for uploading a video, viewing tracked results, downloading the annotated MP4, or capturing a webcam photo for object recognition.
+
+```powershell
+streamlit run streamlit_app.py
+```
+
+Open the local URL displayed in the terminal (usually `http://localhost:8501`). The first run downloads the selected YOLO weights when they are not already present.
+
 ## Features
 
 - YOLO inference with selectable model weights (defaults to `yolov8n.pt`)
@@ -15,6 +25,7 @@ Real-time object detection and class-aware multi-object tracking using [Ultralyt
 ```text
 .
 ├── main.py                       # Simple source-checkout entry point
+├── streamlit_app.py               # Web interface for videos and webcam photos
 ├── src/object_detection/
 │   ├── app.py                    # CLI, video pipeline, and drawing
 │   └── tracker.py                # Kalman filter and SORT implementation
