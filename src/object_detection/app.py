@@ -102,6 +102,15 @@ def download_sample_video(destination: Path) -> Optional[Path]:
             return None
     return destination
 
+def ccw(A, B, C):
+    return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+
+def intersect(A, B, C, D):
+    return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
+
+def get_side(P, L1, L2):
+    return (P[0] - L1[0]) * (L2[1] - L1[1]) - (P[1] - L1[1]) * (L2[0] - L1[0])
+
 def main():
     parser = argparse.ArgumentParser(description="Real-time Object Detection and Tracking with YOLOv8 & SORT")
     parser.add_argument(
@@ -155,6 +164,13 @@ def main():
     )
     parser.add_argument("--no-display", action="store_true", help="Run without an OpenCV window.")
     parser.add_argument("--download-sample", action="store_true", help="Download and run the sample video.")
+    parser.add_argument(
+        "--line", 
+        type=float, 
+        nargs=4, 
+        default=[0.1, 0.5, 0.9, 0.5], 
+        help="Line coordinates as fraction of width/height: start_x start_y end_x end_y (default: 0.1 0.5 0.9 0.5)"
+    )
     args = parser.parse_args()
 
     # Load YOLO Model
@@ -214,6 +230,15 @@ def main():
     # Initialize SORT Tracker
     tracker = Sort(max_age=args.max_age, min_hits=args.min_hits, iou_threshold=args.iou)
 
+    # Initialize tracking structures for line crossing
+    L1 = None
+    L2 = None
+    track_centroids = {}
+    track_sides = {}
+    counted_ids = set()
+    in_counts = {}
+    out_counts = {}
+
     print("\n-----------------------------------------------------")
     print("Press 'q' key in the video screen to exit the program.")
     print("-----------------------------------------------------\n")
@@ -257,11 +282,50 @@ def main():
             
             inference_duration = time.time() - start_inference_time
             
+            # Initialize line coordinate bounds based on actual frame size if not done
+            if L1 is None and L2 is None:
+                h, w = frame.shape[:2]
+                L1 = (int(args.line[0] * w), int(args.line[1] * h))
+                L2 = (int(args.line[2] * w), int(args.line[3] * h))
+
+            # Draw counting line
+            if L1 is not None and L2 is not None:
+                cv2.line(frame, L1, L2, (0, 165, 255), 3) # Orange
+                cv2.circle(frame, L1, 6, (0, 0, 255), -1)
+                cv2.circle(frame, L2, 6, (0, 0, 255), -1)
+                cv2.putText(frame, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
+
             # Draw tracking output on the frame
             for obj in tracked_objects:
                 x1, y1, x2, y2, track_id, class_id = obj
                 track_id = int(track_id)
                 class_id = int(class_id)
+                
+                # Compute centroid
+                cx = int((x1 + x2) / 2.0)
+                cy = int((y1 + y2) / 2.0)
+                P = (cx, cy)
+                
+                # Determine side of line
+                side = 1 if get_side(P, L1, L2) >= 0 else -1
+                
+                # Check line crossing
+                if track_id in track_centroids:
+                    prev_P = track_centroids[track_id]
+                    prev_side = track_sides[track_id]
+                    
+                    if side != prev_side:
+                        if intersect(prev_P, P, L1, L2):
+                            if track_id not in counted_ids:
+                                counted_ids.add(track_id)
+                                name = class_names.get(class_id, f"Class {class_id}")
+                                if prev_side == 1 and side == -1:
+                                    in_counts[name] = in_counts.get(name, 0) + 1
+                                else:
+                                    out_counts[name] = out_counts.get(name, 0) + 1
+                                    
+                track_centroids[track_id] = P
+                track_sides[track_id] = side
                 
                 # Fetch class name
                 name = class_names.get(class_id, f"Class {class_id}")
@@ -280,7 +344,7 @@ def main():
             
             # Frame overlay diagnostic panel (semi-transparent glassmorphic banner)
             overlay = frame.copy()
-            cv2.rectangle(overlay, (5, 5), (280, 75), (30, 30, 30), -1)
+            cv2.rectangle(overlay, (5, 5), (320, 115), (30, 30, 30), -1)
             cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
             
             # Text lines inside diagnostic banner
@@ -296,22 +360,35 @@ def main():
             )
             cv2.putText(
                 frame, 
-                f"Model Inference: {inference_duration*1000:.1f} ms", 
-                (15, 45), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                0.5, 
-                (255, 255, 255), 
-                1, 
-                lineType=cv2.LINE_AA
-            )
-            cv2.putText(
-                frame, 
                 f"Active Tracks: {len(tracker.trackers)}", 
-                (15, 65), 
+                (15, 45), 
                 cv2.FONT_HERSHEY_SIMPLEX, 
                 0.5, 
                 (0, 191, 255), 
                 1, 
+                lineType=cv2.LINE_AA
+            )
+            # Display IN/OUT counts
+            total_in = sum(in_counts.values())
+            total_out = sum(out_counts.values())
+            cv2.putText(
+                frame, 
+                f"IN: {total_in}", 
+                (15, 70), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.55, 
+                (50, 255, 50), 
+                2, 
+                lineType=cv2.LINE_AA
+            )
+            cv2.putText(
+                frame, 
+                f"OUT: {total_out}", 
+                (15, 95), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.55, 
+                (50, 50, 255), 
+                2, 
                 lineType=cv2.LINE_AA
             )
 
