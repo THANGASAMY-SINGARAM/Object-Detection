@@ -28,53 +28,34 @@ def get_color(track_id):
 
 def draw_premium_bbox(img, bbox, label, color, thickness=2, corner_len=15):
     """
-    Draws a premium, high-tech looking bounding box with corner highlights
-    and a semi-transparent label tag.
+    Draws a clean, professional, human-crafted bounding box with a clear text label tag.
     """
     x1, y1, x2, y2 = map(int, bbox)
     
-    # Draw thin boundary rectangle
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
-    
-    # Draw top-left corner accents
-    cv2.line(img, (x1, y1), (x1 + corner_len, y1), color, thickness)
-    cv2.line(img, (x1, y1), (x1, y1 + corner_len), color, thickness)
-    # Draw top-right corner accents
-    cv2.line(img, (x2, y1), (x2 - corner_len, y1), color, thickness)
-    cv2.line(img, (x2, y1), (x2, y1 + corner_len), color, thickness)
-    # Draw bottom-left corner accents
-    cv2.line(img, (x1, y2), (x1 + corner_len, y2), color, thickness)
-    cv2.line(img, (x1, y2), (x1, y2 - corner_len), color, thickness)
-    # Draw bottom-right corner accents
-    cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thickness)
-    cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thickness)
+    # Draw clean solid rectangle
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
     
     # Setup label text details
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45
+    font_scale = 0.4
     text_thickness = 1
     t_size = cv2.getTextSize(label, font, font_scale, text_thickness)[0]
     
     # Prevent the label from rendering off-screen at the top
     label_y = y1
-    if label_y - t_size[1] - 8 < 0:
-        label_y = y1 + t_size[1] + 8
+    if label_y - t_size[1] - 6 < 0:
+        label_y = y1 + t_size[1] + 6
         
-    # Draw semi-transparent background block for text
-    overlay = img.copy()
+    # Draw solid background block for text matching the box color
     cv2.rectangle(
-        overlay, 
+        img, 
         (x1, label_y - t_size[1] - 6), 
         (x1 + t_size[0] + 6, label_y), 
         color, 
         -1
     )
     
-    # Blend overlay with original frame (alpha blending)
-    alpha = 0.7
-    cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, img)
-    
-    # Draw text
+    # Draw white text on top of the solid background block
     cv2.putText(
         img, 
         label, 

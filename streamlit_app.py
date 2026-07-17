@@ -201,40 +201,25 @@ def render_video(
 
 
 def main() -> None:
+    st.title("Object Tracking & Flow Analytics Dashboard")
     st.markdown(
-        """<style>
-        .stApp { background: radial-gradient(circle at top right, #183f65 0, #071526 28rem, #05101f 100%); }
-        .block-container { max-width: 1240px; padding-top: 2.25rem; padding-bottom: 4rem; }
-        [data-testid="stSidebar"] { background: #081827; border-right: 1px solid rgba(139, 206, 255, .12); }
-        .hero { padding: 2.2rem; border-radius: 24px; background: linear-gradient(120deg, rgba(28, 105, 144, .9), rgba(35, 197, 171, .78)); color: white; box-shadow: 0 18px 48px rgba(0, 0, 0, .23); }
-        .hero h1 { margin: 0; font-size: 2.45rem; letter-spacing: -.04em; } .hero p { margin: .4rem 0 0; opacity: .92; font-size: 1.04rem; }
-        .eyebrow { color: #93f6e9; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; font-size: .74rem; }
-        .feature-card { padding: 1.1rem 1.2rem; min-height: 110px; border: 1px solid rgba(147,246,233,.22); border-radius: 16px; background: rgba(14, 36, 55, .78); }
-        .feature-card strong { display:block; color: #d9fffa; margin-bottom: .25rem; font-size: 1.02rem; }
-        [data-testid="stMetric"] { background: rgba(14, 36, 55, .72); border: 1px solid rgba(139, 206, 255, .16); border-radius: 14px; padding: .8rem; }
-        div[data-testid="stFileUploader"] { padding: 1rem; border: 1px dashed rgba(147,246,233,.45); border-radius: 16px; background: rgba(14, 36, 55, .55); }
-        .stButton > button { border-radius: 10px; font-weight: 700; min-height: 2.7rem; }
-        </style>""",
-        unsafe_allow_html=True,
+        "A clean, professional workspace for real-time object detection, multi-object tracking, "
+        "and line-crossing analysis."
     )
-    st.markdown("<div class='hero'><div class='eyebrow'>Computer vision workspace</div><h1>🎯 VisionTrack AI</h1><p>Recognize objects, display their names, and follow them across every frame.</p></div>", unsafe_allow_html=True)
-    st.write("")
-
-    intro_columns = st.columns(3)
-    feature_text = [("📹 Upload a video", "Get an annotated MP4 ready to download."), ("📸 Use your webcam", "Capture a photo and recognize objects instantly."), ("🏷️ Track every object", "Persistent IDs and readable object labels.")]
-    for column, (title, description) in zip(intro_columns, feature_text):
-        column.markdown(f"<div class='feature-card'><strong>{title}</strong><span>{description}</span></div>", unsafe_allow_html=True)
     st.write("")
 
     with st.sidebar:
-        st.markdown("## Control room")
-        st.caption("Tune the AI before starting an analysis.")
-        st.divider()
-        st.markdown("#### Model settings")
-        model_name = st.selectbox("YOLO model", ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt"], help="Larger models are more accurate but slower.")
-        confidence = st.slider("Minimum confidence", 0.1, 0.9, 0.35, 0.05)
-        class_filter = st.text_input("Class IDs (optional)", placeholder="Example: 0, 2 for person and car")
-        st.caption("COCO examples: 0 = person, 2 = car, 16 = dog.")
+        st.header("Detection Parameters")
+        st.caption("Adjust inference and category filters below.")
+        
+        model_name = st.selectbox(
+            "YOLO Model Size", 
+            ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt"], 
+            help="Larger models provide higher accuracy but require more compute."
+        )
+        confidence = st.slider("Confidence Threshold", 0.1, 0.9, 0.35, 0.05)
+        class_filter = st.text_input("Filter Class IDs (comma-separated)", placeholder="e.g. 0, 2 for person and car")
+        st.caption("Common COCO IDs: 0 = Person, 2 = Car, 5 = Bus, 7 = Truck, 16 = Dog.")
         
         st.divider()
         st.markdown("#### Counting Line Settings")
