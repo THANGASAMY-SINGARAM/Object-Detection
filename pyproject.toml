@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yolo-sort-object-tracking"
+version = "1.0.0"
+description = "Real-time object detection and class-aware SORT tracking."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "opencv-python>=4.8",
+    "ultralytics>=8.0",
+]
+
+[project.scripts]
+object-track = "object_detection.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,341 @@
+import sys
+import time
+import argparse
+import urllib.request
+from pathlib import Path
+from typing import Optional
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+# Import custom SORT tracker
+from .tracker import Sort
+
+def get_color(track_id):
+    """
+    Generates a unique, deterministic, and bright color for a given track ID.
+    """
+    np.random.seed(int(track_id))
+    # Generate random HSV values to guarantee high saturation and brightness
+    h = np.random.randint(0, 180)
+    s = np.random.randint(180, 255)
+    v = np.random.randint(180, 255)
+    
+    # Convert HSV to BGR for OpenCV
+    hsv_pixel = np.array([[[h, s, v]]], dtype=np.uint8)
+    bgr_pixel = cv2.cvtColor(hsv_pixel, cv2.COLOR_HSV2BGR)
+    return tuple(int(c) for c in bgr_pixel[0, 0])
+
+def draw_premium_bbox(img, bbox, label, color, thickness=2, corner_len=15):
+    """
+    Draws a premium, high-tech looking bounding box with corner highlights
+    and a semi-transparent label tag.
+    """
+    x1, y1, x2, y2 = map(int, bbox)
+    
+    # Draw thin boundary rectangle
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
+    
+    # Draw top-left corner accents
+    cv2.line(img, (x1, y1), (x1 + corner_len, y1), color, thickness)
+    cv2.line(img, (x1, y1), (x1, y1 + corner_len), color, thickness)
+    # Draw top-right corner accents
+    cv2.line(img, (x2, y1), (x2 - corner_len, y1), color, thickness)
+    cv2.line(img, (x2, y1), (x2, y1 + corner_len), color, thickness)
+    # Draw bottom-left corner accents
+    cv2.line(img, (x1, y2), (x1 + corner_len, y2), color, thickness)
+    cv2.line(img, (x1, y2), (x1, y2 - corner_len), color, thickness)
+    # Draw bottom-right corner accents
+    cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thickness)
+    cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thickness)
+    
+    # Setup label text details
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    text_thickness = 1
+    t_size = cv2.getTextSize(label, font, font_scale, text_thickness)[0]
+    
+    # Prevent the label from rendering off-screen at the top
+    label_y = y1
+    if label_y - t_size[1] - 8 < 0:
+        label_y = y1 + t_size[1] + 8
+        
+    # Draw semi-transparent background block for text
+    overlay = img.copy()
+    cv2.rectangle(
+        overlay, 
+        (x1, label_y - t_size[1] - 6), 
+        (x1 + t_size[0] + 6, label_y), 
+        color, 
+        -1
+    )
+    
+    # Blend overlay with original frame (alpha blending)
+    alpha = 0.7
+    cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0, img)
+    
+    # Draw text
+    cv2.putText(
+        img, 
+        label, 
+        (x1 + 3, label_y - 4), 
+        font, 
+        font_scale, 
+        (255, 255, 255), 
+        text_thickness, 
+        lineType=cv2.LINE_AA
+    )
+
+def download_sample_video(destination: Path) -> Optional[Path]:
+    """
+    Downloads a short sample video of pedestrians for demonstration if needed.
+    """
+    url = "https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/people-detection.mp4"
+    if not destination.exists():
+        print(f"Downloading sample video from {url} to {destination}...")
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(url, destination)
+            print("Download successful!")
+        except Exception as e:
+            print(f"Warning: Could not download sample video: {e}")
+            return None
+    return destination
+
+def main():
+    parser = argparse.ArgumentParser(description="Real-time Object Detection and Tracking with YOLOv8 & SORT")
+    parser.add_argument(
+        "--source", 
+        type=str, 
+        default="0", 
+        help="Video source: '0' or device index for webcam, or a path to a video file."
+    )
+    parser.add_argument(
+        "--model", 
+        type=str, 
+        default="yolov8n.pt", 
+        help="YOLO model configuration or weight file (default: yolov8n.pt)."
+    )
+    parser.add_argument(
+        "--conf", 
+        type=float, 
+        default=0.35, 
+        help="Confidence threshold for YOLO detections."
+    )
+    parser.add_argument(
+        "--iou", 
+        type=float, 
+        default=0.3, 
+        help="IoU threshold for SORT track association matching."
+    )
+    parser.add_argument(
+        "--max-age", 
+        type=int, 
+        default=15, 
+        help="Maximum frames a track can go unmatched before deletion."
+    )
+    parser.add_argument(
+        "--min-hits", 
+        type=int, 
+        default=3, 
+        help="Minimum matches to establish a confirmed track."
+    )
+    parser.add_argument(
+        "--classes", 
+        type=int, 
+        nargs="+", 
+        default=None, 
+        help="Filter tracking to specific class IDs (e.g. --classes 0 2 for person and car)."
+    )
+    parser.add_argument(
+        "--save", 
+        type=str, 
+        default=None, 
+        help="Path to save output video (optional)."
+    )
+    parser.add_argument("--no-display", action="store_true", help="Run without an OpenCV window.")
+    parser.add_argument("--download-sample", action="store_true", help="Download and run the sample video.")
+    args = parser.parse_args()
+
+    # Load YOLO Model
+    print(f"Loading YOLO model: {args.model}...")
+    try:
+        model = YOLO(args.model)
+    except Exception as e:
+        print(f"Failed to load YOLO model: {e}")
+        sys.exit(1)
+        
+    class_names = model.names
+
+    # Resolve Video Source
+    # Check if index is numeric (meaning webcam)
+    if args.source.isdigit():
+        source_val = int(args.source)
+        is_webcam = True
+    else:
+        source_val = args.source
+        is_webcam = False
+        if not Path(source_val).is_file():
+            parser.error(f"Video file not found: {source_val}")
+
+    if args.download_sample:
+        sample_path = download_sample_video(Path("assets") / "people_sample.mp4")
+        if sample_path is None:
+            sys.exit(1)
+        source_val = str(sample_path)
+        is_webcam = False
+
+    print(f"Initializing video input: {source_val}")
+    cap = cv2.VideoCapture(source_val)
+    
+    if not cap.isOpened():
+        if is_webcam:
+            print(f"Error: Could not access webcam at index {source_val}.")
+            sys.exit(1)
+        else:
+            print(f"Error: Could not open video file {source_val}.")
+            sys.exit(1)
+
+    # Output Video Writer setup if saving
+    video_writer = None
+    if args.save:
+        output_path = Path(args.save)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (frame_width, frame_height))
+        if not video_writer.isOpened():
+            cap.release()
+            raise RuntimeError(f"Could not create output video: {output_path}")
+        print(f"Saving tracking output video to: {output_path}")
+
+    # Initialize SORT Tracker
+    tracker = Sort(max_age=args.max_age, min_hits=args.min_hits, iou_threshold=args.iou)
+
+    print("\n-----------------------------------------------------")
+    print("Press 'q' key in the video screen to exit the program.")
+    print("-----------------------------------------------------\n")
+
+    prev_time = time.time()
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("End of video stream or failed to read frame.")
+                break
+                
+            start_inference_time = time.time()
+            
+            # Run YOLO Object Detection on frame
+            results = model(frame, conf=args.conf, verbose=False)
+            
+            # Extract detections in format [x1, y1, x2, y2, score, class_id]
+            dets_list = []
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls = int(box.cls[0].cpu().numpy())
+                    
+                    # Apply optional class filtering
+                    if args.classes is None or cls in args.classes:
+                        dets_list.append([x1, y1, x2, y2, conf, cls])
+                        
+            # Convert to numpy array
+            if len(dets_list) > 0:
+                dets = np.array(dets_list)
+            else:
+                # empty detections must be of shape (0, 6)
+                dets = np.empty((0, 6))
+
+            # Update SORT Tracker
+            tracked_objects = tracker.update(dets)
+            
+            inference_duration = time.time() - start_inference_time
+            
+            # Draw tracking output on the frame
+            for obj in tracked_objects:
+                x1, y1, x2, y2, track_id, class_id = obj
+                track_id = int(track_id)
+                class_id = int(class_id)
+                
+                # Fetch class name
+                name = class_names.get(class_id, f"Class {class_id}")
+                
+                # Render label
+                label = f"ID {track_id} | {name}"
+                color = get_color(track_id)
+                
+                # Draw premium bbox
+                draw_premium_bbox(frame, (x1, y1, x2, y2), label, color)
+
+            # Calculate and display frame stats (FPS, Latency)
+            curr_time = time.time()
+            fps = 1.0 / max(curr_time - prev_time, 1e-6)
+            prev_time = curr_time
+            
+            # Frame overlay diagnostic panel (semi-transparent glassmorphic banner)
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (5, 5), (280, 75), (30, 30, 30), -1)
+            cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+            
+            # Text lines inside diagnostic banner
+            cv2.putText(
+                frame, 
+                f"FPS: {fps:.1f}", 
+                (15, 25), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, 
+                (0, 255, 0), 
+                1, 
+                lineType=cv2.LINE_AA
+            )
+            cv2.putText(
+                frame, 
+                f"Model Inference: {inference_duration*1000:.1f} ms", 
+                (15, 45), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, 
+                (255, 255, 255), 
+                1, 
+                lineType=cv2.LINE_AA
+            )
+            cv2.putText(
+                frame, 
+                f"Active Tracks: {len(tracker.trackers)}", 
+                (15, 65), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, 
+                (0, 191, 255), 
+                1, 
+                lineType=cv2.LINE_AA
+            )
+
+            # Save frame to output video writer if configured
+            if video_writer is not None:
+                video_writer.write(frame)
+
+            if not args.no_display:
+                cv2.imshow("Real-Time Object Detection and Tracking", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    print("Exit signal received from user.")
+                    break
+                
+    except KeyboardInterrupt:
+        print("Interrupt received. Stopping...")
+        
+    finally:
+        # Release resources
+        cap.release()
+        if video_writer is not None:
+            video_writer.release()
+        if not args.no_display:
+            cv2.destroyAllWindows()
+        print("Video capture and windows released. Cleaned up successfully.")
+
+if __name__ == "__main__":
+    main()

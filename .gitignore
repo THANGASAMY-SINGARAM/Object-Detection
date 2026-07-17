@@ -1,0 +1,17 @@
+# Python environments and generated Python files
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Downloaded model weights and media outputs
+*.pt
+*.onnx
+assets/*.mp4
+outputs/
+
+# Local tooling
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.idea/
