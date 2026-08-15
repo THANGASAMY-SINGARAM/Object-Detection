@@ -4,13 +4,15 @@ Real-time object detection and class-aware multi-object tracking using [Ultralyt
 
 ## Web app
 
-The easiest way to use VisionTrack is the Streamlit web interface. It provides a modern UI for uploading a video, viewing tracked results, downloading the annotated MP4, or capturing a webcam photo for object recognition.
+The easiest way to use VisionTrack is the Streamlit web interface. It provides a modern dashboard for image and video uploads, local-webcam sessions, object recognition, multi-object tracking, line-crossing flow analytics, and downloadable annotated video output.
 
 ```powershell
 streamlit run streamlit_app.py
 ```
 
 Open the local URL displayed in the terminal (usually `http://localhost:8501`). The first run downloads the selected YOLO weights when they are not already present.
+
+The **Control room** sidebar provides confidence, tracking-IoU, track-aging, confirmation, class-filter, and optional flow-counting controls. Use the input tabs to choose an image, video, camera photo, or local webcam session.
 
 ## Features
 

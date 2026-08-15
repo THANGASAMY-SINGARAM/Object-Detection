@@ -101,8 +101,8 @@ class KalmanBoxTracker:
         self.id = KalmanBoxTracker.count
         KalmanBoxTracker.count += 1
         self.history = []
-        self.hits = 0
-        self.hit_streak = 0
+        self.hits = 1
+        self.hit_streak = 1
         self.age = 0
         self.class_id = class_id
 

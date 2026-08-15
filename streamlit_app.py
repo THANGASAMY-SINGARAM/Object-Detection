@@ -73,12 +73,16 @@ def summarize_tracks(tracks: np.ndarray, names: Union[Dict[int, str], List[str]]
 
 
 def detect_image(
-    model: YOLO, image: np.ndarray, confidence: float, classes: Optional[List[int]]
+    model: YOLO,
+    image: np.ndarray,
+    confidence: float,
+    classes: Optional[List[int]],
+    iou_threshold: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Recognize objects in one image and return an annotated RGB image."""
     results = model(image, conf=confidence, verbose=False)
     detections = extract_detections(results, classes)
-    tracker = Sort(min_hits=1)
+    tracker = Sort(min_hits=1, iou_threshold=iou_threshold)
     tracks = tracker.update(detections)
     return cv2.cvtColor(annotate_frame(image, tracks, model.names), cv2.COLOR_BGR2RGB), tracks
 
@@ -89,7 +93,11 @@ def render_video(
     confidence: float,
     classes: Optional[List[int]],
     line_coords: tuple[float, float, float, float],
-) -> tuple[bytes, int, float, Counter, Counter]:
+    iou_threshold: float,
+    max_age: int,
+    min_hits: int,
+    show_counting_line: bool,
+) -> Tuple[bytes, int, float, Counter, Counter, Dict[str, float]]:
     """Track uploaded video frames and return a downloadable MP4, along with line crossing statistics."""
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
@@ -116,7 +124,7 @@ def render_video(
     L1 = (int(line_coords[0] * width), int(line_coords[1] * height))
     L2 = (int(line_coords[2] * width), int(line_coords[3] * height))
 
-    tracker = Sort(min_hits=2)
+    tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold)
     
     # Tracking variables
     track_centroids = {}
@@ -129,6 +137,8 @@ def render_video(
     preview = st.empty()
     metrics = st.empty()
     frame_number = 0
+    inference_total = 0.0
+    peak_tracks = 0
     started = time.perf_counter()
 
     try:
@@ -136,14 +146,17 @@ def render_video(
             success, frame = capture.read()
             if not success:
                 break
+            inference_started = time.perf_counter()
             results = model(frame, conf=confidence, verbose=False)
+            inference_total += time.perf_counter() - inference_started
             tracks = tracker.update(extract_detections(results, classes))
+            peak_tracks = max(peak_tracks, len(tracks))
             
             # Draw tracking bounding boxes
             annotated = annotate_frame(frame, tracks, model.names)
             
             # Check line crossings
-            for track in tracks:
+            for track in tracks if show_counting_line else []:
                 x1, y1, x2, y2, track_id, class_id = track
                 track_id, class_id = int(track_id), int(class_id)
                 
@@ -171,10 +184,11 @@ def render_video(
                 track_sides[track_id] = side
             
             # Draw line on the frame
-            cv2.line(annotated, L1, L2, (0, 165, 255), 3)
-            cv2.circle(annotated, L1, 6, (0, 0, 255), -1)
-            cv2.circle(annotated, L2, 6, (0, 0, 255), -1)
-            cv2.putText(annotated, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
+            if show_counting_line:
+                cv2.line(annotated, L1, L2, (0, 165, 255), 3)
+                cv2.circle(annotated, L1, 6, (0, 0, 255), -1)
+                cv2.circle(annotated, L2, 6, (0, 0, 255), -1)
+                cv2.putText(annotated, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
             
             writer.write(annotated)
 
@@ -183,10 +197,11 @@ def render_video(
             if frame_number == 1 or frame_number % 5 == 0:
                 preview.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
                 with metrics.container():
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Processing speed", f"{frame_number / elapsed:.1f} FPS")
-                    col2.metric("Total IN", sum(in_counts.values()))
-                    col3.metric("Total OUT", sum(out_counts.values()))
+                    col2.metric("Inference latency", f"{inference_total / frame_number * 1000:.0f} ms")
+                    col3.metric("Active tracks", len(tracks))
+                    col4.metric("Flow events", sum(in_counts.values()) + sum(out_counts.values()))
                 if total_frames > 0:
                     progress.progress(min(frame_number / total_frames, 1.0), text=f"Analyzing frame {frame_number:,} of {total_frames:,}")
     finally:
@@ -197,20 +212,43 @@ def render_video(
     with output_path.open("rb") as video_file:
         video_bytes = video_file.read()
     output_path.unlink(missing_ok=True)
-    return video_bytes, frame_number, time.perf_counter() - started, in_counts, out_counts
+    elapsed = time.perf_counter() - started
+    performance = {
+        "avg_inference_ms": inference_total / max(frame_number, 1) * 1000,
+        "peak_tracks": peak_tracks,
+        "processing_fps": frame_number / max(elapsed, 1e-6),
+    }
+    return video_bytes, frame_number, elapsed, in_counts, out_counts, performance
 
 
 def main() -> None:
-    st.title("Object Tracking & Flow Analytics Dashboard")
     st.markdown(
-        "A clean, professional workspace for real-time object detection, multi-object tracking, "
-        "and line-crossing analysis."
+        """<style>
+        .stApp { background: linear-gradient(135deg, #07111f 0%, #0b1e33 55%, #102f42 100%); }
+        .block-container { max-width: 1240px; padding-top: 2.2rem; padding-bottom: 4rem; }
+        [data-testid="stSidebar"] { background: #081827; border-right: 1px solid rgba(98, 210, 195, .16); }
+        .hero { padding: 2.1rem 2.3rem; border-radius: 22px; background: linear-gradient(120deg, #0d5c7a, #0d9488); color: white; box-shadow: 0 20px 45px rgba(0,0,0,.22); }
+        .hero h1 { margin: .15rem 0; font-size: 2.45rem; letter-spacing: -.045em; } .hero p { margin: .45rem 0 0; opacity: .92; font-size: 1.05rem; }
+        .eyebrow { font-size: .75rem; font-weight: 800; letter-spacing: .13em; color: #bffcf2; text-transform: uppercase; }
+        .feature { border: 1px solid rgba(126, 239, 221, .18); border-radius: 14px; background: rgba(10, 31, 48, .72); padding: 1rem 1.1rem; min-height: 95px; }
+        .feature strong { display: block; color: #dffffa; margin-bottom: .22rem; }
+        [data-testid="stMetric"] { background: rgba(10, 31, 48, .7); border: 1px solid rgba(126, 239, 221, .17); border-radius: 14px; padding: .8rem; }
+        .stButton > button { border-radius: 10px; min-height: 2.7rem; font-weight: 700; }
+        </style>
+        <div class="hero"><div class="eyebrow">Computer vision workspace</div><h1>VisionTrack AI</h1><p>Detect, identify, track, count, and export objects from images, video, and a local camera.</p></div>""",
+        unsafe_allow_html=True,
     )
+    feature_columns = st.columns(3)
+    for column, content in zip(
+        feature_columns,
+        [("01  INPUT", "Image, video, or local webcam"), ("02  INSIGHT", "Names, IDs, confidence, and flow"), ("03  OUTPUT", "Live preview and annotated MP4 export")],
+    ):
+        column.markdown(f"<div class='feature'><strong>{content[0]}</strong>{content[1]}</div>", unsafe_allow_html=True)
     st.write("")
 
     with st.sidebar:
-        st.header("Detection Parameters")
-        st.caption("Adjust inference and category filters below.")
+        st.markdown("## Control room")
+        st.caption("Adjust the model and tracking behavior before analysis.")
         
         model_name = st.selectbox(
             "YOLO Model Size", 
@@ -218,11 +256,16 @@ def main() -> None:
             help="Larger models provide higher accuracy but require more compute."
         )
         confidence = st.slider("Confidence Threshold", 0.1, 0.9, 0.35, 0.05)
+        iou_threshold = st.slider("Tracking IoU Threshold", 0.1, 0.9, 0.30, 0.05)
         class_filter = st.text_input("Filter Class IDs (comma-separated)", placeholder="e.g. 0, 2 for person and car")
         st.caption("Common COCO IDs: 0 = Person, 2 = Car, 5 = Bus, 7 = Truck, 16 = Dog.")
+        with st.expander("Tracking behavior"):
+            max_age = st.slider("Keep unmatched track (frames)", 1, 60, 15)
+            min_hits = st.slider("Confirm track after matches", 1, 10, 2)
         
         st.divider()
-        st.markdown("#### Counting Line Settings")
+        show_counting_line = st.toggle("Enable flow counting", value=True)
+        st.markdown("#### Counting line")
         line_orientation = st.radio("Orientation", ["Horizontal", "Vertical", "Custom"], index=0)
         if line_orientation == "Horizontal":
             line_y = st.slider("Line Height (Y ratio)", 0.0, 1.0, 0.5, 0.05)
@@ -244,21 +287,30 @@ def main() -> None:
         st.sidebar.error("Class IDs must be comma-separated integers.")
         st.stop()
 
-    mode = st.radio("Input source", ["Upload video", "Webcam photo", "Live webcam stream"], horizontal=True, label_visibility="collapsed")
+    mode = st.radio(
+        "Input source",
+        ["Upload image", "Upload video", "Webcam photo", "Live webcam stream"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
     try:
         model = load_model(model_name)
     except Exception as error:
         st.error(f"Could not load {model_name}: {error}")
         st.stop()
 
-    if mode == "Webcam photo":
-        st.subheader("Webcam recognition")
-        st.caption("Take a photo. Every visible object will receive a name and an ID.")
-        photo = st.camera_input("Capture a frame")
-        if photo is not None:
-            image = cv2.imdecode(np.frombuffer(photo.getvalue(), np.uint8), cv2.IMREAD_COLOR)
+    if mode in ("Upload image", "Webcam photo"):
+        st.subheader("Image recognition")
+        st.caption("Use an image or camera photo to detect object names, boxes, and IDs.")
+        input_file = (
+            st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "webp"])
+            if mode == "Upload image"
+            else st.camera_input("Capture a frame")
+        )
+        if input_file is not None:
+            image = cv2.imdecode(np.frombuffer(input_file.getvalue(), np.uint8), cv2.IMREAD_COLOR)
             with st.spinner("Recognizing objects…"):
-                annotated, tracks = detect_image(model, image, confidence, allowed_classes)
+                annotated, tracks = detect_image(model, image, confidence, allowed_classes, iou_threshold)
             image_column, results_column = st.columns([1.65, 1])
             image_column.image(annotated, caption="Recognition result", use_container_width=True)
             with results_column:
@@ -276,8 +328,9 @@ def main() -> None:
         return
 
     if mode == "Live webcam stream":
-        st.subheader("Live Webcam Tracking & Line Crossing Counter")
-        st.caption("Runs your local webcam stream, tracks objects, and counts line crossings in real-time.")
+        st.subheader("Local webcam session")
+        st.caption("Runs the camera attached to the computer hosting Streamlit. Sessions end automatically so the page remains responsive.")
+        frame_limit = st.number_input("Frames to process", min_value=30, max_value=3600, value=300, step=30)
         
         run_feed = st.toggle("Start Webcam Feed", value=False)
         
@@ -290,7 +343,7 @@ def main() -> None:
                 metrics = st.empty()
                 
                 # Initialize SORT tracker and tracking states
-                tracker = Sort(min_hits=2)
+                tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold)
                 track_centroids = {}
                 track_sides = {}
                 counted_ids = set()
@@ -305,21 +358,24 @@ def main() -> None:
                 L2 = (int(line_coords[2] * width), int(line_coords[3] * height))
                 
                 prev_time = time.perf_counter()
+                processed_frames = 0
                 
                 try:
-                    while run_feed:
+                    while run_feed and processed_frames < frame_limit:
                         ret, frame = cap.read()
                         if not ret:
                             st.error("Failed to read from webcam.")
                             break
                             
+                        inference_started = time.perf_counter()
                         results = model(frame, conf=confidence, verbose=False)
+                        inference_ms = (time.perf_counter() - inference_started) * 1000
                         tracks = tracker.update(extract_detections(results, allowed_classes))
                         
                         annotated = annotate_frame(frame, tracks, model.names)
                         
                         # Check line crossings
-                        for track in tracks:
+                        for track in tracks if show_counting_line else []:
                             x1, y1, x2, y2, track_id, class_id = track
                             track_id, class_id = int(track_id), int(class_id)
                             
@@ -347,10 +403,11 @@ def main() -> None:
                             track_sides[track_id] = side
                         
                         # Draw line on the frame
-                        cv2.line(annotated, L1, L2, (0, 165, 255), 3)
-                        cv2.circle(annotated, L1, 6, (0, 0, 255), -1)
-                        cv2.circle(annotated, L2, 6, (0, 0, 255), -1)
-                        cv2.putText(annotated, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
+                        if show_counting_line:
+                            cv2.line(annotated, L1, L2, (0, 165, 255), 3)
+                            cv2.circle(annotated, L1, 6, (0, 0, 255), -1)
+                            cv2.circle(annotated, L2, 6, (0, 0, 255), -1)
+                            cv2.putText(annotated, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
                         
                         # Render preview
                         preview.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
@@ -361,10 +418,11 @@ def main() -> None:
                         prev_time = curr_time
                         
                         with metrics.container():
-                            col1, col2, col3 = st.columns(3)
+                            col1, col2, col3, col4 = st.columns(4)
                             col1.metric("Frame Rate", f"{fps:.1f} FPS")
-                            col2.metric("Total IN", sum(in_counts.values()))
-                            col3.metric("Total OUT", sum(out_counts.values()))
+                            col2.metric("Inference latency", f"{inference_ms:.0f} ms")
+                            col3.metric("Active tracks", len(tracks))
+                            col4.metric("Flow events", sum(in_counts.values()) + sum(out_counts.values()))
                             
                             # Break down counts
                             if sum(in_counts.values()) + sum(out_counts.values()) > 0:
@@ -379,6 +437,7 @@ def main() -> None:
                                     })
                                 st.dataframe(breakdown_list, hide_index=True, use_container_width=True)
                                 
+                        processed_frames += 1
                         time.sleep(0.01)
                 finally:
                     cap.release()
@@ -405,7 +464,17 @@ def main() -> None:
         try:
             input_file.write(uploaded_video.getvalue())
             input_file.close()
-            video_bytes, frame_count, elapsed, in_counts, out_counts = render_video(model, input_path, confidence, allowed_classes, line_coords)
+            video_bytes, frame_count, elapsed, in_counts, out_counts, performance = render_video(
+                model,
+                input_path,
+                confidence,
+                allowed_classes,
+                line_coords,
+                iou_threshold,
+                max_age,
+                min_hits,
+                show_counting_line,
+            )
         except Exception as error:
             st.error(f"Video processing failed: {error}")
             return
@@ -414,11 +483,12 @@ def main() -> None:
             input_path.unlink(missing_ok=True)
 
         st.success("Analysis complete — your tracked video is ready.")
-        summary_columns = st.columns(4)
+        summary_columns = st.columns(5)
         summary_columns[0].metric("Frames processed", f"{frame_count:,}")
         summary_columns[1].metric("Processing time", f"{elapsed:.1f} s")
-        summary_columns[2].metric("Total IN", sum(in_counts.values()))
-        summary_columns[3].metric("Total OUT", sum(out_counts.values()))
+        summary_columns[2].metric("Average inference", f"{performance['avg_inference_ms']:.0f} ms")
+        summary_columns[3].metric("Peak active tracks", int(performance["peak_tracks"]))
+        summary_columns[4].metric("Flow events", sum(in_counts.values()) + sum(out_counts.values()))
         
         # Display object-wise counts
         if sum(in_counts.values()) + sum(out_counts.values()) > 0:
