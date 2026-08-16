@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from collections import Counter
 from typing import Dict, Iterable, List, Optional, Tuple, Union
@@ -17,6 +18,7 @@ from ultralytics import YOLO
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from object_detection.app import draw_premium_bbox, get_color, ccw, intersect, get_side
+from object_detection.adaptive import AdaptiveInferenceController
 from object_detection.detection import DetectionConfig, PRESETS, detection_statistics, run_detection
 from object_detection.intelligence import VideoIntelligenceEngine, Zone
 from object_detection.intelligence.reports import build_report, report_json, timeline_csv
@@ -153,6 +155,8 @@ def render_video(
     L2 = (int(line_coords[2] * width), int(line_coords[3] * height))
 
     tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold)
+    adaptive = AdaptiveInferenceController(mode="AUTO", target_fps=30)
+    last_detections = None
     intelligence = VideoIntelligenceEngine(zones, trajectory_history)
     
     # Tracking variables
@@ -176,8 +180,14 @@ def render_video(
             if not success:
                 break
             inference_started = time.perf_counter()
-            detections = run_detection(model, frame, detection_config)
-            inference_total += time.perf_counter() - inference_started
+            lost_tracks = sum(track.time_since_update > 0 for track in tracker.trackers)
+            decision = adaptive.decide(last_detections, len(tracker.trackers), lost_tracks, frame_number / max(time.perf_counter() - started, 1e-6) if frame_number else None)
+            if decision.should_detect:
+                detections = run_detection(model, frame, replace(detection_config, imgsz=decision.resolution))
+                last_detections = detections
+                inference_total += time.perf_counter() - inference_started
+            else:
+                detections = np.empty((0, 6), dtype=np.float32)
             tracks = tracker.update(detections)
             peak_tracks = max(peak_tracks, len(tracks))
             insights, crowd = intelligence.update(tracks, time.time(), frame.shape[:2])
@@ -262,7 +272,7 @@ def render_video(
 def main() -> None:
     st.markdown(
         """<style>
-        .stApp { background: #08111d; color: #d7e3ef; }
+        .stApp { background-color:#08111d; background-image:linear-gradient(rgba(54,132,170,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(54,132,170,.045) 1px, transparent 1px); background-size:42px 42px; color:#d7e3ef; }
         .block-container { max-width: 1440px; padding: 1.2rem 2rem 3rem; }
         [data-testid="stSidebar"] { background: #0c1826; border-right: 1px solid #1d3043; }
         [data-testid="stSidebar"] .block-container { padding: 1.25rem .9rem; }
