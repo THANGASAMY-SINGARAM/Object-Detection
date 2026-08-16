@@ -310,8 +310,8 @@ def main() -> None:
         class_filter = st.text_input("Filter Class IDs (comma-separated)", placeholder="e.g. 0, 2 for person and car")
         st.caption("Common COCO IDs: 0 = Person, 2 = Car, 5 = Bus, 7 = Truck, 16 = Dog.")
         with st.expander("Tracking behavior"):
-            max_age = st.slider("Keep unmatched track (frames)", 1, 60, 15)
-            min_hits = st.slider("Confirm track after matches", 1, 10, 2)
+            max_age = st.slider("Keep unmatched track (frames)", 1, 60, 30)
+            min_hits = st.slider("Confirm track after matches", 1, 10, 3)
             trajectory_history = st.slider("Trajectory history (frames)", 10, 240, 60, 10)
         with st.expander("Image accuracy options"):
             enhance_contrast = st.toggle("Contrast enhancement", value=False)

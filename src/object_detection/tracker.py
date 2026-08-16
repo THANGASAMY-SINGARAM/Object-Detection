@@ -171,14 +171,23 @@ class Sort:
         self.trackers = []
         self.frame_count = 0
 
-    def update(self, dets=np.empty((0, 6))):
+    def update(self, dets=np.empty((0, 5))):
         """
         Params:
-          dets - a numpy array of detections in the format [[x1, y1, x2, y2, score, class_id], ...]
+          dets - a numpy array of detections in the format [[x1, y1, x2, y2, score], ...]
+                 or [[x1, y1, x2, y2, score, class_id], ...] (optional 6th column for class-aware tracking)
         Requires: this method must be called once for each frame even with empty detections.
         Returns a similar array where the last elements are the object ID and class ID.
         """
         self.frame_count += 1
+        
+        # Standardize detections shape to (N, 6)
+        if len(dets) > 0:
+            if dets.shape[1] == 5:
+                # Append a column of zeros for default class_id
+                dets = np.hstack((dets, np.zeros((len(dets), 1))))
+        else:
+            dets = np.empty((0, 6))
         
         # Get predicted positions from existing trackers
         trks = np.zeros((len(self.trackers), 5))

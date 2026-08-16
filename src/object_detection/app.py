@@ -121,7 +121,7 @@ def main():
     parser.add_argument(
         "--max-age", 
         type=int, 
-        default=15, 
+        default=30, 
         help="Maximum frames a track can go unmatched before deletion."
     )
     parser.add_argument(
