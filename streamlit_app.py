@@ -27,7 +27,7 @@ st.set_page_config(
     page_title="VisionTrack AI",
     page_icon="🎯",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -262,27 +262,26 @@ def render_video(
 def main() -> None:
     st.markdown(
         """<style>
-        .stApp { background: linear-gradient(135deg, #07111f 0%, #0b1e33 55%, #102f42 100%); }
-        .block-container { max-width: 1240px; padding-top: 2.2rem; padding-bottom: 4rem; }
-        [data-testid="stSidebar"] { background: #081827; border-right: 1px solid rgba(98, 210, 195, .16); }
-        .hero { padding: 2.1rem 2.3rem; border-radius: 22px; background: linear-gradient(120deg, #0d5c7a, #0d9488); color: white; box-shadow: 0 20px 45px rgba(0,0,0,.22); }
-        .hero h1 { margin: .15rem 0; font-size: 2.45rem; letter-spacing: -.045em; } .hero p { margin: .45rem 0 0; opacity: .92; font-size: 1.05rem; }
-        .eyebrow { font-size: .75rem; font-weight: 800; letter-spacing: .13em; color: #bffcf2; text-transform: uppercase; }
-        .feature { border: 1px solid rgba(126, 239, 221, .18); border-radius: 14px; background: rgba(10, 31, 48, .72); padding: 1rem 1.1rem; min-height: 95px; }
-        .feature strong { display: block; color: #dffffa; margin-bottom: .22rem; }
-        [data-testid="stMetric"] { background: rgba(10, 31, 48, .7); border: 1px solid rgba(126, 239, 221, .17); border-radius: 14px; padding: .8rem; }
-        .stButton > button { border-radius: 10px; min-height: 2.7rem; font-weight: 700; }
+        .stApp { background: #08111d; color: #d7e3ef; }
+        .block-container { max-width: 1440px; padding: 1.2rem 2rem 3rem; }
+        [data-testid="stSidebar"] { background: #0c1826; border-right: 1px solid #1d3043; }
+        [data-testid="stSidebar"] .block-container { padding: 1.25rem .9rem; }
+        .vt-header { display:flex; align-items:center; justify-content:space-between; padding: .8rem 0 1.1rem; border-bottom: 1px solid #1d3043; margin-bottom: 1rem; }
+        .vt-brand { font-size:1.05rem; letter-spacing:.08em; font-weight:800; color:#e8f6ff; } .vt-sub { font-size:.68rem; letter-spacing:.1em; color:#7591aa; margin-top:.18rem; }
+        .vt-live { color:#6fe3c1; font-size:.78rem; font-weight:700; letter-spacing:.06em; } .vt-live::before { content:'●'; margin-right:.45rem; }
+        .vt-section { color:#8ca3b8; font-size:.72rem; font-weight:800; letter-spacing:.11em; margin:1.5rem 0 .7rem; }
+        [data-testid="stMetric"] { background:#0e1d2c; border:1px solid #203548; border-radius:12px; padding:.7rem .85rem; box-shadow:none; }
+        [data-testid="stMetricLabel"] { color:#7892a9; font-size:.68rem; letter-spacing:.06em; } [data-testid="stMetricValue"] { color:#ecf7ff; font-size:1.25rem; }
+        .stButton > button { border-radius:9px; min-height:2.45rem; font-weight:650; border-color:#2a4a62; }
+        [data-testid="stFileUploader"] { border:1px dashed #31536e; border-radius:14px; padding:1rem; background:#0d1b29; }
+        [data-testid="stTabs"] [role="tablist"] { gap:.45rem; border-bottom:1px solid #203548; } [data-testid="stTabs"] button { color:#829ab0; border-radius:8px 8px 0 0; }
+        [data-testid="stTabs"] button[aria-selected="true"] { color:#72ddff; background:#10283a; }
+        @media (max-width: 900px) { .block-container { padding:1rem; } .vt-header { align-items:flex-start; } }
         </style>
-        <div class="hero"><div class="eyebrow">Computer vision workspace</div><h1>VisionTrack AI</h1><p>Detect, identify, track, count, and export objects from images, video, and a local camera.</p></div>""",
+        <div class="vt-header"><div><div class="vt-brand">VISIONTRACK AI</div><div class="vt-sub">COMPUTER VISION WORKSPACE</div></div><div class="vt-live">SYSTEM ONLINE</div></div>""",
         unsafe_allow_html=True,
     )
-    feature_columns = st.columns(3)
-    for column, content in zip(
-        feature_columns,
-        [("01  INPUT", "Image, video, or local webcam"), ("02  INSIGHT", "Names, IDs, confidence, and flow"), ("03  OUTPUT", "Live preview and annotated MP4 export")],
-    ):
-        column.markdown(f"<div class='feature'><strong>{content[0]}</strong>{content[1]}</div>", unsafe_allow_html=True)
-    st.write("")
+    navigation = st.radio("Navigation", ["Live Analysis", "Tracking", "Analytics", "Events", "Reports"], horizontal=True, label_visibility="collapsed")
 
     with st.sidebar:
         st.markdown("## Control room")
