@@ -17,6 +17,7 @@ from ultralytics import YOLO
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from object_detection.app import draw_premium_bbox, get_color, ccw, intersect, get_side
+from object_detection.detection import DetectionConfig, PRESETS, detection_statistics, run_detection
 from object_detection.intelligence import VideoIntelligenceEngine, Zone
 from object_detection.intelligence.reports import build_report, report_json, timeline_csv
 from object_detection.tracker import Sort
@@ -101,16 +102,14 @@ def draw_intelligence_overlay(frame: np.ndarray, insights, zones: List[Zone]) ->
 def detect_image(
     model: YOLO,
     image: np.ndarray,
-    confidence: float,
-    classes: Optional[List[int]],
+    detection_config: DetectionConfig,
     iou_threshold: float,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
     """Recognize objects in one image and return an annotated RGB image."""
-    results = model(image, conf=confidence, verbose=False)
-    detections = extract_detections(results, classes)
+    detections = run_detection(model, image, detection_config)
     tracker = Sort(min_hits=1, iou_threshold=iou_threshold)
     tracks = tracker.update(detections)
-    return cv2.cvtColor(annotate_frame(image, tracks, model.names), cv2.COLOR_BGR2RGB), tracks
+    return cv2.cvtColor(annotate_frame(image, tracks, model.names), cv2.COLOR_BGR2RGB), tracks, detection_statistics(detections, model.names)
 
 
 def render_video(
@@ -125,6 +124,7 @@ def render_video(
     show_counting_line: bool,
     zones: List[Zone],
     trajectory_history: int,
+    detection_config: DetectionConfig,
 ) -> Tuple[bytes, int, float, Counter, Counter, Dict[str, float], Dict, bytes]:
     """Track uploaded video frames and return a downloadable MP4, along with line crossing statistics."""
     capture = cv2.VideoCapture(str(source))
@@ -176,9 +176,9 @@ def render_video(
             if not success:
                 break
             inference_started = time.perf_counter()
-            results = model(frame, conf=confidence, verbose=False)
+            detections = run_detection(model, frame, detection_config)
             inference_total += time.perf_counter() - inference_started
-            tracks = tracker.update(extract_detections(results, classes))
+            tracks = tracker.update(detections)
             peak_tracks = max(peak_tracks, len(tracks))
             insights, crowd = intelligence.update(tracks, time.time(), frame.shape[:2])
             
@@ -288,12 +288,15 @@ def main() -> None:
         st.markdown("## Control room")
         st.caption("Adjust the model and tracking behavior before analysis.")
         
-        model_name = st.selectbox(
-            "YOLO Model Size", 
-            ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt"], 
-            help="Larger models provide higher accuracy but require more compute."
-        )
+        detection_mode = st.selectbox("Detection mode", ["FAST", "BALANCED", "ACCURACY", "CUSTOM"], index=1)
+        preset_model, preset_size = PRESETS.get(detection_mode, ("yolov8s.pt", 960))
+        model_name = st.selectbox("YOLO model", ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt"], index=["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt"].index(preset_model) if detection_mode != "CUSTOM" else 1, disabled=detection_mode != "CUSTOM")
+        if detection_mode != "CUSTOM":
+            model_name = preset_model
+        imgsz = st.select_slider("Inference resolution", options=[640, 768, 960, 1280], value=preset_size)
         confidence = st.slider("Confidence Threshold", 0.1, 0.9, 0.35, 0.05)
+        nms_iou = st.slider("Detection NMS IoU", 0.3, 0.9, 0.60, 0.05)
+        max_det = st.number_input("Maximum detections", min_value=10, max_value=1000, value=300, step=10)
         iou_threshold = st.slider("Tracking IoU Threshold", 0.1, 0.9, 0.30, 0.05)
         class_filter = st.text_input("Filter Class IDs (comma-separated)", placeholder="e.g. 0, 2 for person and car")
         st.caption("Common COCO IDs: 0 = Person, 2 = Car, 5 = Bus, 7 = Truck, 16 = Dog.")
@@ -301,6 +304,10 @@ def main() -> None:
             max_age = st.slider("Keep unmatched track (frames)", 1, 60, 15)
             min_hits = st.slider("Confirm track after matches", 1, 10, 2)
             trajectory_history = st.slider("Trajectory history (frames)", 10, 240, 60, 10)
+        with st.expander("Image accuracy options"):
+            enhance_contrast = st.toggle("Contrast enhancement", value=False)
+            sharpen = st.toggle("Light sharpening", value=False)
+            tiled_inference = st.toggle("Tiled inference for large images", value=False, help="Can improve small-object recall, but reduces speed and may create duplicate candidates before NMS.")
 
         with st.expander("Intelligence zones", expanded=True):
             st.caption("Define up to three rectangular zones using normalized frame coordinates.")
@@ -341,6 +348,7 @@ def main() -> None:
         st.sidebar.error("Class IDs must be comma-separated integers.")
         st.stop()
     zones = [Zone(name.strip() or f"Zone {index + 1}", kind, x1, y1, x2, y2) for index, (name, kind, x1, y1, x2, y2) in enumerate(zone_specs) if x1 != x2 and y1 != y2]
+    detection_config = DetectionConfig(confidence, nms_iou, int(imgsz), int(max_det), allowed_classes, enhance_contrast, sharpen, tiled_inference)
 
     mode = st.radio(
         "Input source",
@@ -365,12 +373,15 @@ def main() -> None:
         if input_file is not None:
             image = cv2.imdecode(np.frombuffer(input_file.getvalue(), np.uint8), cv2.IMREAD_COLOR)
             with st.spinner("Recognizing objects…"):
-                annotated, tracks = detect_image(model, image, confidence, allowed_classes, iou_threshold)
+                annotated, tracks, stats = detect_image(model, image, detection_config, iou_threshold)
             image_column, results_column = st.columns([1.65, 1])
             image_column.image(annotated, caption="Recognition result", use_container_width=True)
             with results_column:
                 st.markdown("### What I found")
                 st.metric("Objects detected", len(tracks))
+                st.metric("Average confidence", f"{stats['average_confidence']:.2f}" if stats["average_confidence"] is not None else "N/A")
+                if stats["total"] >= 25:
+                    st.warning("Dense scene detected. Accuracy may be reduced because of object overlap and small objects.")
                 summary = summarize_tracks(tracks, model.names)
                 if summary:
                     st.dataframe(
@@ -424,9 +435,9 @@ def main() -> None:
                             break
                             
                         inference_started = time.perf_counter()
-                        results = model(frame, conf=confidence, verbose=False)
+                        detections = run_detection(model, frame, detection_config)
                         inference_ms = (time.perf_counter() - inference_started) * 1000
-                        tracks = tracker.update(extract_detections(results, allowed_classes))
+                        tracks = tracker.update(detections)
                         insights, crowd = intelligence.update(tracks, time.time(), frame.shape[:2])
                         
                         annotated = annotate_frame(frame, tracks, model.names)
@@ -535,6 +546,7 @@ def main() -> None:
                 show_counting_line,
                 zones,
                 trajectory_history,
+                detection_config,
             )
         except Exception as error:
             st.error(f"Video processing failed: {error}")

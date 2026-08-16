@@ -109,6 +109,12 @@ python main.py --source .\input.mp4 --save .\outputs\tracked.mp4 --no-display
 | Intelligence zones | Normal, restricted, entry, and exit rectangles. |
 | Flow counting | Enables the line-crossing counter. |
 
+### Dense-scene detection controls
+
+The dashboard provides Fast, Balanced, Accuracy, and Custom detection modes. They select a real model/resolution pair: Fast (`YOLOv8n`, 640), Balanced (`YOLOv8s`, 960), and Accuracy (`YOLOv8m`, 1280). You can also set YOLO confidence, YOLO NMS IoU, maximum detections, conservative image enhancement, and optional tiled still-image inference. Higher resolution, stronger models, and tiling can improve recall for small or overlapping traffic objects, but reduce FPS.
+
+Detection statistics are computed before SORT tracking, so tracking IDs cannot conceal a detection issue. Quantitative accuracy (precision, recall, F1, mAP) cannot be calculated without a labelled ground-truth dataset. For a custom traffic model, annotate images in YOLO format, split train/validation/test, train with Ultralytics, then compare validation metrics against the pretrained model before claiming improvement.
+
 ## Example output
 
 ```json
