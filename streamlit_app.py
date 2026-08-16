@@ -17,6 +17,8 @@ from ultralytics import YOLO
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from object_detection.app import draw_premium_bbox, get_color, ccw, intersect, get_side
+from object_detection.intelligence import VideoIntelligenceEngine, Zone
+from object_detection.intelligence.reports import build_report, report_json, timeline_csv
 from object_detection.tracker import Sort
 
 
@@ -72,6 +74,30 @@ def summarize_tracks(tracks: np.ndarray, names: Union[Dict[int, str], List[str]]
     return Counter(class_name(names, int(track[5])) for track in tracks)
 
 
+def draw_intelligence_overlay(frame: np.ndarray, insights, zones: List[Zone]) -> np.ndarray:
+    """Add restrained zones, paths, direction arrows, and high-risk indicators."""
+    annotated = frame.copy()
+    height, width = annotated.shape[:2]
+    zone_colors = {"restricted": (55, 80, 235), "entry": (70, 190, 90), "exit": (220, 130, 40), "normal": (205, 150, 40)}
+    for zone in zones:
+        start, end = (int(zone.x1 * width), int(zone.y1 * height)), (int(zone.x2 * width), int(zone.y2 * height))
+        color = zone_colors.get(zone.kind, zone_colors["normal"])
+        cv2.rectangle(annotated, start, end, color, 2)
+        cv2.putText(annotated, f"{zone.name} ({zone.kind})", (start[0] + 4, max(16, start[1] - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    for insight in insights:
+        points = [(int(x), int(y)) for x, y in insight.motion.history]
+        if len(points) > 1:
+            cv2.polylines(annotated, [np.array(points, dtype=np.int32)], False, get_color(insight.track_id), 2)
+        if insight.motion.previous_centroid is not None:
+            previous = tuple(map(int, insight.motion.previous_centroid))
+            current = tuple(map(int, insight.motion.centroid))
+            cv2.arrowedLine(annotated, previous, current, get_color(insight.track_id), 2, tipLength=0.3)
+        if max(insight.anomaly.score, insight.risk_score) >= 0.70:
+            point = tuple(map(int, insight.motion.centroid))
+            cv2.circle(annotated, point, 14, (20, 20, 240), 2)
+    return annotated
+
+
 def detect_image(
     model: YOLO,
     image: np.ndarray,
@@ -97,7 +123,9 @@ def render_video(
     max_age: int,
     min_hits: int,
     show_counting_line: bool,
-) -> Tuple[bytes, int, float, Counter, Counter, Dict[str, float]]:
+    zones: List[Zone],
+    trajectory_history: int,
+) -> Tuple[bytes, int, float, Counter, Counter, Dict[str, float], Dict, bytes]:
     """Track uploaded video frames and return a downloadable MP4, along with line crossing statistics."""
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
@@ -125,6 +153,7 @@ def render_video(
     L2 = (int(line_coords[2] * width), int(line_coords[3] * height))
 
     tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold)
+    intelligence = VideoIntelligenceEngine(zones, trajectory_history)
     
     # Tracking variables
     track_centroids = {}
@@ -151,6 +180,7 @@ def render_video(
             inference_total += time.perf_counter() - inference_started
             tracks = tracker.update(extract_detections(results, classes))
             peak_tracks = max(peak_tracks, len(tracks))
+            insights, crowd = intelligence.update(tracks, time.time(), frame.shape[:2])
             
             # Draw tracking bounding boxes
             annotated = annotate_frame(frame, tracks, model.names)
@@ -189,6 +219,7 @@ def render_video(
                 cv2.circle(annotated, L1, 6, (0, 0, 255), -1)
                 cv2.circle(annotated, L2, 6, (0, 0, 255), -1)
                 cv2.putText(annotated, "COUNTING LINE", (L1[0] + 10, L1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, lineType=cv2.LINE_AA)
+            annotated = draw_intelligence_overlay(annotated, insights, zones)
             
             writer.write(annotated)
 
@@ -197,11 +228,12 @@ def render_video(
             if frame_number == 1 or frame_number % 5 == 0:
                 preview.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
                 with metrics.container():
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3, col4, col5 = st.columns(5)
                     col1.metric("Processing speed", f"{frame_number / elapsed:.1f} FPS")
                     col2.metric("Inference latency", f"{inference_total / frame_number * 1000:.0f} ms")
                     col3.metric("Active tracks", len(tracks))
                     col4.metric("Flow events", sum(in_counts.values()) + sum(out_counts.values()))
+                    col5.metric("Crowd density", crowd.density_per_100k_px)
                 if total_frames > 0:
                     progress.progress(min(frame_number / total_frames, 1.0), text=f"Analyzing frame {frame_number:,} of {total_frames:,}")
     finally:
@@ -218,7 +250,13 @@ def render_video(
         "peak_tracks": peak_tracks,
         "processing_fps": frame_number / max(elapsed, 1e-6),
     }
-    return video_bytes, frame_number, elapsed, in_counts, out_counts, performance
+    report = build_report(intelligence, frame_number / fps)
+    report["objects_by_class"] = {
+        class_name(model.names, int(class_id)): count
+        for class_id, count in report.pop("objects_by_class_id", {}).items()
+    }
+    report["line_crossing"] = {"in": dict(in_counts), "out": dict(out_counts)}
+    return video_bytes, frame_number, elapsed, in_counts, out_counts, performance, report, timeline_csv(intelligence)
 
 
 def main() -> None:
@@ -262,6 +300,22 @@ def main() -> None:
         with st.expander("Tracking behavior"):
             max_age = st.slider("Keep unmatched track (frames)", 1, 60, 15)
             min_hits = st.slider("Confirm track after matches", 1, 10, 2)
+            trajectory_history = st.slider("Trajectory history (frames)", 10, 240, 60, 10)
+
+        with st.expander("Intelligence zones", expanded=True):
+            st.caption("Define up to three rectangular zones using normalized frame coordinates.")
+            zone_count = st.select_slider("Number of zones", options=[0, 1, 2, 3], value=1)
+            zone_specs = []
+            for index in range(zone_count):
+                st.markdown(f"**Zone {index + 1}**")
+                name = st.text_input("Name", value=f"Zone {chr(65 + index)}", key=f"zone_name_{index}")
+                kind = st.selectbox("Type", ["normal", "restricted", "entry", "exit"], index=1 if index == 0 else 0, key=f"zone_kind_{index}")
+                first, second = st.columns(2)
+                x1 = first.slider("Left", 0.0, 1.0, 0.35, 0.05, key=f"zone_x1_{index}")
+                y1 = second.slider("Top", 0.0, 1.0, 0.25, 0.05, key=f"zone_y1_{index}")
+                x2 = first.slider("Right", 0.0, 1.0, 0.65, 0.05, key=f"zone_x2_{index}")
+                y2 = second.slider("Bottom", 0.0, 1.0, 0.75, 0.05, key=f"zone_y2_{index}")
+                zone_specs.append((name, kind, x1, y1, x2, y2))
         
         st.divider()
         show_counting_line = st.toggle("Enable flow counting", value=True)
@@ -286,6 +340,7 @@ def main() -> None:
     except ValueError:
         st.sidebar.error("Class IDs must be comma-separated integers.")
         st.stop()
+    zones = [Zone(name.strip() or f"Zone {index + 1}", kind, x1, y1, x2, y2) for index, (name, kind, x1, y1, x2, y2) in enumerate(zone_specs) if x1 != x2 and y1 != y2]
 
     mode = st.radio(
         "Input source",
@@ -344,6 +399,7 @@ def main() -> None:
                 
                 # Initialize SORT tracker and tracking states
                 tracker = Sort(max_age=max_age, min_hits=min_hits, iou_threshold=iou_threshold)
+                intelligence = VideoIntelligenceEngine(zones, trajectory_history)
                 track_centroids = {}
                 track_sides = {}
                 counted_ids = set()
@@ -371,8 +427,10 @@ def main() -> None:
                         results = model(frame, conf=confidence, verbose=False)
                         inference_ms = (time.perf_counter() - inference_started) * 1000
                         tracks = tracker.update(extract_detections(results, allowed_classes))
+                        insights, crowd = intelligence.update(tracks, time.time(), frame.shape[:2])
                         
                         annotated = annotate_frame(frame, tracks, model.names)
+                        annotated = draw_intelligence_overlay(annotated, insights, zones)
                         
                         # Check line crossings
                         for track in tracks if show_counting_line else []:
@@ -418,11 +476,12 @@ def main() -> None:
                         prev_time = curr_time
                         
                         with metrics.container():
-                            col1, col2, col3, col4 = st.columns(4)
+                            col1, col2, col3, col4, col5 = st.columns(5)
                             col1.metric("Frame Rate", f"{fps:.1f} FPS")
                             col2.metric("Inference latency", f"{inference_ms:.0f} ms")
                             col3.metric("Active tracks", len(tracks))
                             col4.metric("Flow events", sum(in_counts.values()) + sum(out_counts.values()))
+                            col5.metric("Crowd density", crowd.density_per_100k_px)
                             
                             # Break down counts
                             if sum(in_counts.values()) + sum(out_counts.values()) > 0:
@@ -464,7 +523,7 @@ def main() -> None:
         try:
             input_file.write(uploaded_video.getvalue())
             input_file.close()
-            video_bytes, frame_count, elapsed, in_counts, out_counts, performance = render_video(
+            video_bytes, frame_count, elapsed, in_counts, out_counts, performance, intelligence_report, timeline_bytes = render_video(
                 model,
                 input_path,
                 confidence,
@@ -474,6 +533,8 @@ def main() -> None:
                 max_age,
                 min_hits,
                 show_counting_line,
+                zones,
+                trajectory_history,
             )
         except Exception as error:
             st.error(f"Video processing failed: {error}")
@@ -502,9 +563,33 @@ def main() -> None:
                     "OUT": out_counts.get(k, 0)
                 })
             st.dataframe(breakdown_list, hide_index=True, use_container_width=True)
+
+        st.markdown("### Video intelligence report")
+        report_columns = st.columns(3)
+        report_columns[0].metric("Unique tracked objects", intelligence_report["unique_objects"])
+        report_columns[1].metric("Average speed", f"{intelligence_report['average_speed_px_s']:.1f} px/s")
+        report_columns[2].metric("Timeline events", intelligence_report["event_count"])
+        highest_risk = intelligence_report.get("highest_risk_event")
+        if highest_risk:
+            st.warning(f"Trajectory-based highest risk: Object #{highest_risk['track_id']} — score {highest_risk['risk_score']:.2f}. {highest_risk['reason']}")
+        timeline_rows = intelligence_report.get("timeline", [])
+        if timeline_rows:
+            st.markdown("#### Event timeline")
+            event_types = sorted({row["event_type"] for row in timeline_rows})
+            selected_event_type = st.selectbox("Filter timeline by event type", ["All"] + event_types)
+            selected_track_id = st.selectbox("Filter timeline by object", ["All"] + sorted({str(row["track_id"]) for row in timeline_rows if row["track_id"] is not None}))
+            visible_events = [
+                row for row in timeline_rows
+                if (selected_event_type == "All" or row["event_type"] == selected_event_type)
+                and (selected_track_id == "All" or str(row["track_id"]) == selected_track_id)
+            ]
+            st.dataframe(visible_events, hide_index=True, use_container_width=True)
+        downloads = st.columns(3)
+        downloads[0].download_button("Download annotated video", video_bytes, "visiontrack-output.mp4", "video/mp4", use_container_width=True)
+        downloads[1].download_button("Download JSON report", report_json(intelligence_report), "visiontrack-report.json", "application/json", use_container_width=True)
+        downloads[2].download_button("Download event timeline CSV", timeline_bytes, "visiontrack-timeline.csv", "text/csv", use_container_width=True)
             
         st.video(video_bytes)
-        st.download_button("⬇ Download tracked video", video_bytes, "visiontrack-output.mp4", "video/mp4", use_container_width=True)
 
 
 if __name__ == "__main__":

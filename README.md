@@ -1,110 +1,151 @@
-# YOLO + SORT Object Tracking
+# VisionTrack AI: Video Intelligence & Behavior Analysis
 
-Real-time object detection and class-aware multi-object tracking using [Ultralytics YOLO](https://docs.ultralytics.com/) and a self-contained implementation of [SORT](https://arxiv.org/abs/1602.00763). It works with a webcam or video file, assigns persistent IDs to detected objects, and can render an annotated output video.
+VisionTrack AI is not merely an object detector. It combines YOLO and class-aware SORT tracking with explainable, rule-based trajectory, behavior, anomaly, risk, zone, crowd, event-timeline, and reporting analytics.
 
-## Web app
+The system does not claim learned activity recognition or fabricated accuracy. Every alert is derived from configurable rules and includes its reason.
 
-The easiest way to use VisionTrack is the Streamlit web interface. It provides a modern dashboard for image and video uploads, local-webcam sessions, object recognition, multi-object tracking, line-crossing flow analytics, and downloadable annotated video output.
+## Problem statement
 
-```powershell
-streamlit run streamlit_app.py
+Object detection identifies what is visible in one frame. Video intelligence adds the context needed to understand how an object moved, whether it entered a restricted area, and why an alert was raised.
+
+## Key features
+
+- YOLO object detection with class names and boxes
+- Class-aware SORT IDs with configurable association settings
+- Centroid history, trajectory paths, direction arrows, and pixel-per-second speed estimates
+- Rule-based normal movement, stopped-object, loitering, sudden-direction, acceleration, and deceleration behaviors
+- Explainable anomaly scores from 0–1 with LOW/MEDIUM/HIGH statuses
+- Clearly labelled trajectory-based restricted-zone risk predictions
+- User-defined normal, restricted, entry, and exit zones
+- Line-crossing and zone entry/exit events
+- People count, density, dominant movement direction, and growth signals
+- Filterable event timeline, annotated MP4, JSON report, and CSV timeline export
+- Streamlit dashboard plus CLI, image, video, camera-photo, and local-webcam inputs
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Input[Image / Video / Webcam] --> YOLO[YOLO detection]
+    YOLO --> SORT[SORT tracking]
+    SORT --> Trajectory[Trajectory analysis]
+    SORT --> Zones[Zone manager]
+    Trajectory --> Behavior[Rule-based behavior analysis]
+    Zones --> Behavior
+    Behavior --> Anomaly[Explainable anomaly score]
+    Trajectory --> Risk[Trajectory-based risk]
+    SORT --> Crowd[Crowd analysis]
+    Anomaly --> Timeline[Event timeline]
+    Risk --> Timeline
+    Crowd --> Dashboard[VisionTrack dashboard]
+    Timeline --> Reports[JSON / CSV report]
 ```
-
-Open the local URL displayed in the terminal (usually `http://localhost:8501`). The first run downloads the selected YOLO weights when they are not already present.
-
-The **Control room** sidebar provides confidence, tracking-IoU, track-aging, confirmation, class-filter, and optional flow-counting controls. Use the input tabs to choose an image, video, camera photo, or local webcam session.
-
-## Features
-
-- YOLO inference with selectable model weights (defaults to `yolov8n.pt`)
-- Class-aware SORT tracking to avoid matching objects across different categories
-- Webcam, local-video, and downloadable sample-video inputs
-- Live diagnostics for FPS, inference latency, and active tracks
-- Headless mode and MP4 export for batch/server use
 
 ## Project layout
 
 ```text
 .
-├── main.py                       # Simple source-checkout entry point
-├── streamlit_app.py               # Web interface for videos and webcam photos
+├── streamlit_app.py                    # Dashboard
+├── main.py                             # Existing CLI entry point
 ├── src/object_detection/
-│   ├── app.py                    # CLI, video pipeline, and drawing
-│   └── tracker.py                # Kalman filter and SORT implementation
-├── tests/test_tracker.py          # Tracker regression tests
-├── requirements.txt
-└── pyproject.toml                # Installable package configuration
+│   ├── app.py                          # Existing OpenCV/YOLO CLI pipeline
+│   ├── tracker.py                      # SORT tracker
+│   └── intelligence/
+│       ├── trajectory.py               # History, speed, direction
+│       ├── zones.py                    # Zone transitions
+│       ├── behavior.py                 # Explainable behavior rules
+│       ├── anomaly.py                  # Anomaly scoring
+│       ├── crowd.py                    # Crowd analytics
+│       ├── events.py                   # Event timeline
+│       ├── engine.py                   # Per-frame orchestration
+│       └── reports.py                  # JSON and CSV exports
+└── tests/                              # Unit tests
 ```
 
-## Quick start
+## Installation
 
-Requires Python 3.9 or newer. Create an isolated environment, activate it, then install the dependencies:
+Requires Python 3.9 or newer.
 
 ```powershell
+git clone https://github.com/THANGASAMY-SINGARAM/Object-Detection.git
+cd Object-Detection
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Run your default webcam:
+## Streamlit dashboard
 
 ```powershell
+streamlit run streamlit_app.py
+```
+
+Open `http://localhost:8501` (or the URL shown in the terminal). Choose image, video, webcam photo, or local webcam; set confidence/IoU/tracker settings; define up to three zones; then process a video to download the annotated output and intelligence reports.
+
+The local-webcam mode accesses the camera on the computer hosting Streamlit and is frame-limited to keep the UI responsive.
+
+## CLI
+
+```powershell
+# Webcam
 python main.py --source 0
-```
 
-Run a video and save the annotated output:
-
-```powershell
+# Save an annotated video
 python main.py --source .\input.mp4 --save .\outputs\tracked.mp4
-```
 
-For a server or batch job, suppress the display window:
-
-```powershell
+# Headless/batch mode
 python main.py --source .\input.mp4 --save .\outputs\tracked.mp4 --no-display
 ```
 
-Download and process the demonstration video:
+## Configuration
 
-```powershell
-python main.py --download-sample
+| Control | Purpose |
+| --- | --- |
+| Confidence threshold | Minimum accepted YOLO detection confidence. |
+| Tracking IoU | Required overlap to associate a detection with an existing track. |
+| Track age / confirmation | Unmatched-track retention and matches required to confirm it. |
+| Trajectory history | Number of centroids preserved and drawn per ID. |
+| Intelligence zones | Normal, restricted, entry, and exit rectangles. |
+| Flow counting | Enables the line-crossing counter. |
+
+## Example output
+
+```json
+{
+  "unique_objects": 12,
+  "average_speed_px_s": 43.5,
+  "most_active_zone": "Zone A",
+  "highest_risk_event": {
+    "track_id": 4,
+    "risk_score": 0.72,
+    "reason": "Trajectory-based prediction: object is moving toward restricted zone Zone A."
+  }
+}
 ```
 
-The first model run downloads the selected YOLO weight file if it is not already available locally.
+## Performance and limitations
 
-## Options
+The app displays processing FPS, average inference latency, active tracks, and crowd density. Results depend on model size, resolution, and hardware; no fixed performance or accuracy figure is claimed.
 
-| Option | Description |
-| --- | --- |
-| `--source` | Webcam index (for example, `0`) or video path. |
-| `--model` | YOLO weight file, such as `yolov8n.pt` or `yolov8s.pt`. |
-| `--conf` | Detection confidence threshold; default `0.35`. |
-| `--iou` | SORT association IoU threshold; default `0.3`. |
-| `--max-age` | Frames to retain an unmatched track; default `15`. |
-| `--min-hits` | Matches required to confirm a track; default `3`. |
-| `--classes` | COCO class IDs to keep, for example `--classes 0 2`. |
-| `--save` | Destination for an annotated MP4. Parent folders are created automatically. |
-| `--no-display` | Do not create an OpenCV window. |
-| `--download-sample` | Download and use the sample pedestrian video. |
+Speeds are pixel-space estimates until camera calibration is added. Behavior, anomaly, and risk features are deterministic configurable rules, not trained activity-recognition models. SORT may change IDs after severe occlusion, and zone/risk estimates rely on 2D image coordinates.
 
-## Development
+## Future improvements
 
-Run the regression tests without downloading model weights:
+- Calibrated real-world speed/distance
+- Polygon zones and saved zone profiles
+- Learned activity/anomaly models trained on labelled data
+- Multi-camera identity association
+- PDF report export
+
+## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-To install a command-line entry point during development:
+Tests cover tracker association plus trajectory, direction, speed, zone transitions, behavior, anomaly, and event logging.
 
-```powershell
-python -m pip install -e .
-object-track --source 0
-```
+## License
 
-## Notes
-
-- The tracker uses COCO class IDs exposed by the selected YOLO model. `0` is person and `2` is car for the standard COCO models.
-- Downloaded weights, sample videos, local virtual environments, and generated outputs are excluded from Git via `.gitignore`.
-- This repository is distributed under the [MIT License](LICENSE).
+[MIT License](LICENSE)
